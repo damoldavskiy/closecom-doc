@@ -1,0 +1,15 @@
+name: latex
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - run: sudo apt install latexmk
+      - run: sudo apt install texlive-latex-extra
+      - run: sudo apt install texlive-lang-cyrillic
+      - run: make
+      - uses: actions/upload-artifact@v2
+        with:
+          name: documentation
+          path: build
