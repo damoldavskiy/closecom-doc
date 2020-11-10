@@ -2,7 +2,7 @@ OUTDIR = build
 
 .ONESHELL:
 all:
-	rm -f $(OUTDIR)*
+	rm -r $(OUTDIR)
 	mkdir -p $(OUTDIR)
 	cp -r server $(OUTDIR)
 	cp -r client $(OUTDIR)
@@ -13,11 +13,11 @@ all:
 	cp styles/* client
 	cp styles/* common
 	cd server
-	latexmk -outdir=../build-server -pdf *.tex
+	latexmk -outdir=../build-server -pdf *.tex >/dev/null
 	cd ../client
-	latexmk -outdir=../build-client -pdf *.tex
+	latexmk -outdir=../build-client -pdf *.tex >/dev/null
 	cd ../common
-	latexmk -outdir=../build-common -pdf *.tex
+	latexmk -outdir=../build-common -pdf *.tex >/dev/null
 	cd ..
 	rm server/*
 	rm client/*
