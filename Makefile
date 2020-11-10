@@ -1,29 +1,20 @@
 OUTDIR = build
+TARGETS = client server common
 
 .ONESHELL:
 all:
 	rm -r $(OUTDIR)
 	mkdir -p $(OUTDIR)
-	cp -r server $(OUTDIR)
-	cp -r client $(OUTDIR)
-	cp -r common $(OUTDIR)
-	cp -r styles $(OUTDIR)
+	for target in $(TARGETS) ; do \
+		cp -r $$target $(OUTDIR) ; \
+		cp styles/* $(OUTDIR)/$$target ; \
+	done
 	cd $(OUTDIR)
-	cp styles/* server
-	cp styles/* client
-	cp styles/* common
-	cd server
-	latexmk -outdir=../build-server -pdf *.tex >/dev/null
-	cd ../client
-	latexmk -outdir=../build-client -pdf *.tex >/dev/null
-	cd ../common
-	latexmk -outdir=../build-common -pdf *.tex >/dev/null
-	cd ..
-	rm server/*
-	rm client/*
-	rm common/*
-	mv build-server/*.pdf server
-	mv build-client/*.pdf client
-	mv build-common/*.pdf common
-	rm -r build-*
-	rm -r styles
+	for target in $(TARGETS) ; do \
+		cd $$target ; \
+		latexmk -outdir=../build-$$target -pdf *.tex >/dev/null ; \
+		cd .. ; \
+		rm $$target/* ; \
+		mv build-$$target/*.pdf $$target ; \
+		rm -r build-$$target ; \
+	done
