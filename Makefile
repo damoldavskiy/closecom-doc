@@ -1,3 +1,4 @@
+# This directory MUST NOT be current (.)
 OUTDIR = build
 TARGETS = client server common
 
