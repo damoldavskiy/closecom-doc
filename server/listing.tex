@@ -1,0 +1,831 @@
+\documentclass[listing]{espd}
+\usepackage[russian]{babel}
+
+\bibliographystyle{gost2008}
+
+\managerrank{Научный руководитель,\\доцент департамента\\программной инженерии\\факультета компьютерных наук,\\канд. техн. наук}
+\manager{С.Л. Макаров}
+
+\authorrank{студент группы БПИ183}
+\author{Д.А. Молдавский}
+
+\title{Мессенджер с поиском по Bluetooth\\(серверная часть)}
+\code{02.07}
+
+\city{Москва}
+\year{2021}
+
+\begin{document}
+
+\annotation
+
+Текст программы -- это документ, содержащий исходный код программы. Каждому файлу соответствует его подраздел. Ввиду того, что в исходном коде встречаются символы Unicode, данные символы в приведенном ниже коде заменены на обозначения через обратную косую черту. В данном документе содержатся следующие разделы: <<Исходный сервера>>, <<Исходный код миграций>>.
+
+В разделе <<Исходный код сервера>> приведен код непосредственно веб-сервера, основной части данной программы.
+
+В разделе <<Исходный код миграций>> приведен код SQL-миграций для создания базы данных.
+
+Настоящий Текст программы удовлетворяет требованиям ГОСТ 19.401-78~\cite{espd401}.
+
+\tableofcontents
+\section{Исходный код сервера}
+
+\subsection{main.py}
+\begin{verbatim}
+import logging
+from flask import Flask, g
+from flask_mail import Mail
+from constants import ERROR_LOG_PATH, MAIL_SERVER, MAIL_PORT
+from controllers import account, bluetooth, messenger
+from secrets import secrets
+from util import error
+app = Flask(__name__)
+app.register_blueprint(account.mod)
+app.register_blueprint(bluetooth.mod)
+app.register_blueprint(messenger.mod)
+app.config.update(dict(
+    MAIL_SERVER = MAIL_SERVER,
+    MAIL_PORT = MAIL_PORT,
+    MAIL_USE_TLS = False,
+    MAIL_USE_SSL = True,
+    MAIL_USERNAME = secrets['mail_username'],
+    MAIL_PASSWORD = secrets['mail_password']
+))
+mail = Mail(app)
+logging.basicConfig(filename=ERROR_LOG_PATH,
+                    level=logging.INFO,
+                    format='[%(asctime)s] [%(process)d] [%(levelname)s
+] %(message)s',
+                    datefmt='%F %X %z')
+@app.errorhandler(500)
+def internal_error(exception):
+    return error('internal server error', 500)
+@app.teardown_appcontext
+def close_connection(exception):
+    db = getattr(g, '_database', None)
+    if db is not None:
+        db.close()
+\end{verbatim}
+
+\subsection{base.py}
+\begin{verbatim}
+from models.account import User, Token
+from models.messenger import Chat, Message
+from util import get_db, get_token
+def columns(names, table):
+    return ', '.join([f'{table}.{column}' for column in names.split()]
+)
+USER_COLUMNS = columns('id email password confirmed name bid', 'user')
+TOKEN_COLUMNS = columns('id type token user_id', 'token')
+CHAT_COLUMNS = columns('id type name', 'chat')
+MEMBERSHIP_COLUMNS = columns('user_id chat_id', 'membership')
+MESSAGE_COLUMNS = columns('id chat_id user_id time text', 'message')
+def get_user_by_id(user_id):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute(f'SELECT {USER_COLUMNS} FROM user WHERE id=?', (use
+r_id,))
+    row = cursor.fetchone()
+    if row == None:
+        return None
+    return User(row)
+def get_user_by_email(email):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute(f'SELECT {USER_COLUMNS} FROM user WHERE email=?', (
+email,))
+    row = cursor.fetchone()
+    if row == None:
+        return None
+    return User(row)
+def get_user_by_token(token, token_type):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute(f'SELECT {TOKEN_COLUMNS} FROM token WHERE token=? A
+ND type=?', (token, token_type))
+    row = cursor.fetchone()
+    if row == None:
+        return None
+    token = Token(row)
+    cursor.execute(f'SELECT {USER_COLUMNS} FROM user WHERE id=?', (tok
+en.user_id,))
+    row = cursor.fetchone()
+    return User(row)
+def get_user_by_bid(bid):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute(f'SELECT {USER_COLUMNS} FROM user WHERE bid=?', (bi
+d,))
+    row = cursor.fetchone()
+    if row == None:
+        return None
+    return User(row)
+def get_chat_by_id(chat_id):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute(f'SELECT {CHAT_COLUMNS} FROM chat WHERE id=?', (cha
+t_id,))
+    row = cursor.fetchone()
+    if row == None:
+        return None
+    return Chat(row)
+def get_message_by_id(message_id):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute(f'SELECT {MESSAGE_COLUMNS} FROM message WHERE id=?'
+, (message_id,))
+    row = cursor.fetchone()
+    if row == None:
+        return None
+    return Message(row)
+def create_user(account):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('INSERT INTO user (email, password) VALUES (?, ?)',
+ (account.email, account.password))
+    cursor.execute(f'SELECT {USER_COLUMNS} FROM user WHERE id=?', (cur
+sor.lastrowid,))
+    return User(cursor.fetchone())
+def delete_user(user):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('DELETE FROM user WHERE email=?', (user.email,))
+def create_token(user, token_type):
+    db = get_db()
+    cursor = db.cursor()
+    token = get_token()
+    cursor.execute('INSERT INTO token (token, type, user_id) VALUES (?
+, ?, ?)', (token, token_type, user.id))
+    return token
+def set_user_password(user, password):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('UPDATE user SET password=? WHERE id=?', (password,
+ user.id))
+def set_user_confirmed(user, confirmed):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('UPDATE user SET confirmed=? WHERE id=?', (confirme
+d, user.id))
+def set_user_about(user, about):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('UPDATE user SET name=? WHERE id=?', (about.name, u
+ser.id))
+def set_user_bid(user, bid):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('UPDATE user SET bid=? WHERE id=?', (bid, user.id))
+def get_chats(user):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT chat_id FROM membership WHERE user_id=?', (
+user.id,))
+    rows = cursor.fetchall()
+    chats = []
+    for row in rows:
+        chat_id = row[0]
+        cursor.execute(f'SELECT {USER_COLUMNS} FROM user JOIN membersh
+ip ON user.id=membership.user_id WHERE chat_id=?', (chat_id,))
+        user_rows = cursor.fetchall()
+        users = []
+        for user_row in user_rows:
+            users.append(User(user_row).about())
+        cursor.execute(f'SELECT DISTINCT {USER_COLUMNS} FROM user JOIN
+ message ON user.id=message.user_id WHERE message.chat_id=?', (chat_id
+,))
+        sender_rows = cursor.fetchall()
+        senders = []
+        for sender_row in sender_rows:
+            senders.append(User(sender_row).about())
+        cursor.execute(f'SELECT {MESSAGE_COLUMNS} FROM message WHERE c
+hat_id=? ORDER BY id DESC LIMIT 1', (chat_id,))
+        message_row = cursor.fetchone()
+        message = Message(message_row).__dict__ if message_row is not 
+None else None
+        cursor.execute(f'SELECT {CHAT_COLUMNS} FROM chat WHERE id=?', 
+(chat_id,))
+        chat_row = cursor.fetchone()
+        chat = Chat(chat_row)
+        chats.append({'chat_id': chat_id, 'type': chat.type, 'name': c
+hat.name, 'users': users, 'senders': senders, 'latest_message': messag
+e})
+    return chats
+def create_chat(creator, users, chat_name):
+    db = get_db()
+    cursor = db.cursor()
+    
+    cursor.execute('INSERT INTO chat (type, name) VALUES ("public", ?)
+', (chat_name,))
+    chat_id = cursor.lastrowid
+    for user in [creator, *users]:
+        cursor.execute('INSERT INTO membership (user_id, chat_id) VALU
+ES (?, ?)', (user.id, chat_id))
+    return chat_id
+def is_user_in_chat(user, chat_id):
+     db = get_db()
+     cursor = db.cursor()
+     cursor.execute(f'SELECT EXISTS(SELECT {MEMBERSHIP_COLUMNS} FROM m
+embership WHERE user_id=? AND chat_id=?) AS found', (user.id, chat_id)
+)
+     row = cursor.fetchone()
+     return bool(row[0])
+def get_chat_history(chat_id):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute(f'SELECT {USER_COLUMNS} FROM user JOIN membership O
+N user.id=membership.user_id WHERE chat_id=?', (chat_id,))
+    user_rows = cursor.fetchall()
+    users = []
+    for user_row in user_rows:
+        users.append(User(user_row).about())
+    cursor.execute(f'SELECT DISTINCT {USER_COLUMNS} FROM user JOIN mes
+sage ON user.id=message.user_id WHERE message.chat_id=?', (chat_id,))
+    sender_rows = cursor.fetchall()
+    senders = []
+    for sender_row in sender_rows:
+        senders.append(User(sender_row).about())
+    cursor.execute(f'SELECT {MESSAGE_COLUMNS} FROM message WHERE chat_
+id=? ORDER BY id', (chat_id,))
+    message_rows = cursor.fetchall()
+    messages = []
+    for message_row in message_rows:
+        messages.append(Message(message_row).__dict__)
+    cursor.execute(f'SELECT {CHAT_COLUMNS} FROM chat WHERE id=?', (cha
+t_id,))
+    chat_row = cursor.fetchone()
+    chat = Chat(chat_row)
+    return {'users': users, 'senders': senders, 'type': chat.type, 'na
+me': chat.name, 'messages': messages}
+def send_message(user, chat_id, message):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('INSERT INTO message (chat_id, user_id, time, text)
+ VALUES (?, ?, ?, ?)', (chat_id, user.id, message.time, message.text))
+def get_private_chat_id(sender, recipient):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT EXISTS(SELECT chat.id FROM chat JOIN member
+ship AS sender_ms ON chat.id=sender_ms.chat_id JOIN membership AS reci
+pient_ms ON chat.id=recipient_ms.chat_id WHERE type="private" AND send
+er_ms.user_id=? AND recipient_ms.user_id=?) AS found', (sender.id, rec
+ipient.id))
+    row = cursor.fetchone()
+    if row[0]:
+        return 0
+    cursor.execute('INSERT INTO chat (type) VALUES ("private")')
+    chat_id = cursor.lastrowid
+    cursor.execute('INSERT INTO membership (user_id, chat_id) VALUES (
+?, ?)', (sender.id, chat_id))
+    cursor.execute('INSERT INTO membership (user_id, chat_id) VALUES (
+?, ?)', (recipient.id, chat_id))
+    return chat_id
+def user_search(requester, email):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute(f'SELECT {USER_COLUMNS} FROM user WHERE email LIKE 
+? LIMIT 10', (f'%{email}%',))
+    user_rows = cursor.fetchall()
+    users = []
+    for user_row in user_rows:
+        user = User(user_row)
+        if user.email != requester.email:
+            users.append(user.about())
+    return users
+def delete_message(message):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('DELETE FROM message WHERE id=?', (message.id,))
+def delete_chat(chat):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('DELETE FROM chat WHERE id=?', (chat.id,))
+def delete_membership(user, chat):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('DELETE FROM membership WHERE user_id=? AND chat_id
+=?', (user.id, chat.id))
+    cursor.execute('SELECT EXISTS(SELECT user_id FROM membership WHERE
+ chat_id=?) AS found', (chat.id,))
+    row = cursor.fetchone()
+    if row[0]:
+        return
+    delete_chat(chat)
+\end{verbatim}
+
+\subsection{secrets.py}
+\begin{verbatim}
+import json
+from constants import SECRETS_PATH
+with open(SECRETS_PATH) as secrets_file:
+    secrets = json.loads(secrets_file.read())
+\end{verbatim}
+
+\subsection{constants.py}
+\begin{verbatim}
+DATABASE_PATH = '/home/denis/data/database.db'
+ACCESS_LOG_PATH = '/home/denis/logs/access.log'
+ERROR_LOG_PATH = '/home/denis/logs/error.log'
+PIDFILE_PATH = '/home/denis/runtime.pid'
+SECRETS_PATH = '/home/denis/data/secrets.json'
+MAIL_SERVER = 'smtp.gmail.com'
+MAIL_PORT = 465
+TOKEN_SIZE = 32
+MIN_PASSWORD_LENGTH = 4
+# Gunicorn
+daemon = True
+pidfile = PIDFILE_PATH
+errorlog = ERROR_LOG_PATH
+accesslog = ACCESS_LOG_PATH
+\end{verbatim}
+
+\subsection{util.py}
+\begin{verbatim}
+import sqlite3
+from flask import current_app, g
+from flask_mail import Mail, Message
+from hashlib import sha256
+from os import urandom
+from constants import DATABASE_PATH, TOKEN_SIZE
+def log_info(message):
+    current_app.logger.info(message)
+def send_email(recipient, title, text):
+    message = Message(title, sender='donotreply@closecom.org', recipie
+nts=[recipient])
+    message.body = text
+    with current_app.app_context():
+        mail = Mail()
+        mail.send(message)
+    
+def get_token():
+    return urandom(TOKEN_SIZE).hex()
+def hash_password(password):
+    return sha256(password.encode('utf-8')).hexdigest()
+def ok():
+    return {'message': 'ok'}
+def error(message, code):
+    return {'error_message': message}, code
+def html_message(title, message):
+    return '<html><head><title>' + title + '</title><style>body{color:
+#2D3CC8;font-family:sans-serif;'\
+           'text-align:center;margin-top:50px;font-size:24;}</style></
+head><body>' + message + '</body></html>'
+def html_password_change(token):
+    return '<html><head><title>Account recovery</title><style>body{col
+or:#2D3CC8;font-family:sans-serif;'\
+           'text-align:center;margin-top:50px;font-size:24;}input{marg
+in-top:20px;margin-left:10px;margin-right:10px;}'\
+           '</style></head><body>Enter new password<form action="/acco
+unt/change_password" method="post"><input type="password" name="passwo
+rd">'\
+           '<input type="submit" value="Confirm"><input type="hidden" 
+name="token" value="' + token + '"></form></body></html>'
+def get_db():
+    db = getattr(g, '_database', None)
+    if db is None:
+        db = g._database = sqlite3.connect(DATABASE_PATH)
+        db.execute('PRAGMA foreign_keys = ON')
+    return db
+\end{verbatim}
+
+\subsection{bluetooth.py}
+\begin{verbatim}
+from flask import Blueprint, request
+import base
+from util import error, get_db, log_info, ok
+mod = Blueprint('bluetooth', __name__)
+@mod.route('/bluetooth/user_about')
+def user_about():
+    args = request.args
+    bid = args.get('bid')
+    user = base.get_user_by_bid(bid)
+    if not user:
+        return error('invalid bid', 400)
+    log_info(f'User about {user.email}')
+    return user.about()
+@mod.route('/bluetooth/set_bid', methods=['POST'])
+def set_bid():
+    args = request.args
+    token = args.get('token')
+    bid = args.get('bid')
+    if len(bid) == 0:
+        return error('invalid bid', 400)
+    user = base.get_user_by_token(token, 'access')
+    if not user:
+        return error('invalid token', 401)
+    base.set_user_bid(user, bid)
+    get_db().commit()
+    log_info(f'Set bid: {user.email}, {bid}')
+    return ok()
+\end{verbatim}
+
+\subsection{messenger.py}
+\begin{verbatim}
+import json
+from flask import Blueprint, request
+import base
+from models.messenger import MessageModel
+from util import error, get_db, log_info, ok
+mod = Blueprint('messenger', __name__)
+@mod.route('/messenger/chats')
+def chats():
+    args = request.args
+    token = args.get('token')
+    user = base.get_user_by_token(token, 'access')
+    if not user:
+        return error('invalid token', 401)
+    chats = base.get_chats(user)
+    for chat in chats:
+        if chat['type'] == 'private':
+            recipients = [r for r in chat['users'] if r['id'] != user.
+id]
+            chat['name'] = recipients[0]['email'] if len(recipients) >
+ 0 else 'Account deleted'
+    log_info(f'Get chats for user {user.email}')
+    return {'chats': chats}
+@mod.route('/messenger/chat_history')
+def chat_history():
+    args = request.args
+    token = args.get('token')
+    user = base.get_user_by_token(token, 'access')
+    if not user:
+        return error('invalid token', 401)
+    chat_id = args.get('chat_id')
+    if chat_id is None:
+        return error('invalid chat id', 400)
+    if not base.is_user_in_chat(user, chat_id):
+        return error('invalid chat id', 400)
+    chat = base.get_chat_history(chat_id)
+    if chat['type'] == 'private':
+        recipients = [r for r in chat['users'] if r['id'] != user.id]
+        chat['name'] = recipients[0]['email'] if len(recipients) > 0 e
+lse 'Account deleted'
+    log_info(f'Get chat history for user {user.email}')
+    return chat
+@mod.route('/messenger/start_dialog', methods=['POST'])
+def start_dialog():
+    args = request.args
+    content = request.json
+    token = args.get('token')
+    user = base.get_user_by_token(token, 'access')
+    if not user:
+        return error('invalid token', 401)
+    recipient_id = args.get('user_id')
+    if recipient_id is None:
+        return error('invalid user id', 400)
+    recipient = base.get_user_by_id(recipient_id)
+    if recipient is None:
+        return error('invalid user id', 400)
+    if recipient.id == user.id:
+        return error('self chats are not supported', 400)
+    message = MessageModel(content)
+    if not message.valid():
+        return error('invalid message', 405)
+    log_info(f'Start dialog by user {user.email} for user {recipient.e
+mail}')
+    chat_id = base.get_private_chat_id(user, recipient)
+    if not chat_id:
+        return error('chat already started', 402)
+    base.send_message(user, chat_id, message)
+    get_db().commit()
+    return {'chat_id': chat_id}
+@mod.route('/messenger/user_search')
+def user_search():
+    args = request.args
+    token = args.get('token')
+    user = base.get_user_by_token(token, 'access')
+    if not user:
+        return error('invalid token', 401)
+    email = args.get('email')
+    if email is None:
+        return error('invalid email to search', 400)
+    log_info(f'Search by user {user.email} for {email}')
+    return {'users': base.user_search(user, email)}
+@mod.route('/messenger/create_chat', methods=['POST'])
+def create_chat():
+    args = request.args
+    content = request.json
+    token = args.get('token')
+    user = base.get_user_by_token(token, 'access')
+    if not user:
+        return error('invalid token', 401)
+    chat_name = args.get('name')
+    if type(chat_name) is not str or len(chat_name) == 0:
+        return error('invalid chat name', 402)
+    user_ids = content.get('users', None)
+    if type(user_ids) is not list or len(user_ids) == 0:
+        return error('invalid users list', 405)
+    users = []
+    for user_id in user_ids:
+        current_user = base.get_user_by_id(user_id)
+        if current_user is None:
+            return error('invalid user id in list', 402)
+        users.append(current_user)
+    chat_id = base.create_chat(user, users, chat_name)
+    get_db().commit()
+    log_info(f'Create public chat by user {user.email}')
+    return {'chat_id': chat_id}
+@mod.route('/messenger/send_message', methods=['POST'])
+def send_message():
+    args = request.args
+    content = request.json
+    token = args.get('token')
+    user = base.get_user_by_token(token, 'access')
+    if not user:
+        return error('invalid token', 401)
+    chat_id = args.get('chat_id')
+    if not base.is_user_in_chat(user, chat_id):
+        return error('invalid chat id', 400)
+    message = MessageModel(content)
+    if not message.valid():
+        return error('invalid message', 405)
+    base.send_message(user, chat_id, message)
+    get_db().commit()
+    log_info(f'Send message {message.text} by user {user.email}')
+    return ok()
+@mod.route('/messenger/delete_message', methods=['POST'])
+def delete_message():
+    args = request.args
+    token = args.get('token')
+    user = base.get_user_by_token(token, 'access')
+    if not user:
+        return error('invalid token', 401)
+    message_id = args.get('message_id')
+    message = base.get_message_by_id(message_id)
+    if not message or message.user_id != user.id:
+        return error('invalid message id', 400)
+    base.delete_message(message)
+    get_db().commit()
+    log_info(f'Deleted message {message.text} by user {user.email}')
+    return ok()
+@mod.route('/messenger/delete_chat', methods=['POST'])
+def delete_chat():
+    args = request.args
+    token = args.get('token')
+    user = base.get_user_by_token(token, 'access')
+    if not user:
+        return error('invalid token', 401)
+    chat_id = args.get('chat_id')
+    if not base.is_user_in_chat(user, chat_id):
+        return error('invalid chat id', 400)
+    chat = base.get_chat_by_id(chat_id)
+    if chat.type == 'private':
+        base.delete_chat(chat)
+        log_info(f'Deleted private chat {chat_id} by user {user.email}
+')
+    else:
+        base.delete_membership(user, chat)
+        log_info(f'Deleted membership in chat {chat_id} by user {user.
+email}')
+    get_db().commit()
+    return ok()
+\end{verbatim}
+
+\subsection{account.py}
+\begin{verbatim}
+from flask import Blueprint, request
+import base
+from models.account import Account, UserAbout, User, check_email, chec
+k_password
+from secrets import secrets
+from util import error, get_db, hash_password, log_info, ok, send_emai
+l, html_message, html_password_change
+mod = Blueprint('account', __name__)
+@mod.route('/account/create', methods=['POST'])
+def create():
+    content = request.json
+    account = Account(content)
+    if not account.valid():
+        return error('invalid email or password', 400)
+    user = base.get_user_by_email(account.email)
+    if user:
+        return error('email already registered', 405)
+    user = base.create_user(account)
+    access_token = base.create_token(user, 'access')
+    confirm_token = base.create_token(user, 'confirm')
+    get_db().commit()
+    send_email(user.email, 'Account verification', 'http://' + secrets
+['host_address'] + '/account/confirm?token=' + confirm_token)
+    log_info(f'User created {user.email}')
+    return {'token': access_token}
+@mod.route('/account/confirm', methods=['GET'])
+def confirm():
+    args = request.args
+    confirm_token = args.get('token')
+    user = base.get_user_by_token(confirm_token, 'confirm')
+    title = 'Account verification'
+    if not user:
+        return html_message(title, 'Invalid verification token')
+    if user.confirmed:
+        return html_message(title, 'Account is already verified')
+    base.set_user_confirmed(user, 1)
+    get_db().commit()
+    log_info(f'User confirmed {user.email}')
+    return html_message(title, 'Account has been verified')
+@mod.route('/account/recovery', methods=['POST'])
+def recovery():
+    args = request.args
+    email = args.get('email')
+    if not check_email(email):
+        return error('invalid email', 400)
+    user = base.get_user_by_email(email)
+    if not user:
+        return error('email not registered', 405)
+    recovery_token = base.create_token(user, 'recovery')
+    get_db().commit()
+    send_email(user.email, 'Account recovery', 'http://' + secrets['ho
+st_address'] + '/account/recovery_form?token=' + recovery_token)
+    log_info(f'Password recovery request {email}')
+    return ok()
+@mod.route('/account/recovery_form', methods=['GET'])
+def recovery_form():
+    args = request.args
+    recovery_token = args.get('token')
+    user = base.get_user_by_token(recovery_token, 'recovery')
+    if not user:
+        return html_message('Account recovery', 'Invalid recovery toke
+n')
+    log_info(f'Password recovery form request {user.email}')
+    return html_password_change(recovery_token)
+@mod.route('/account/change_password', methods=['POST'])
+def change_password():
+    content = request.form
+    recovery_token = content['token']
+    password = content['password']
+    title = 'Account recovery'
+    if not check_password(password):
+        return html_message(title, 'Invalid password')
+    password = hash_password(password)
+    user = base.get_user_by_token(recovery_token, 'recovery')
+    if not user:
+        return html_message(title, 'Invalid recovery token')
+    base.set_user_password(user, password)
+    get_db().commit()
+    log_info(f'User password changed {user.email}')
+    return html_message(title, 'Password has been changed')
+@mod.route('/account/auth', methods=['POST'])
+def auth():
+    content = request.json
+    account = Account(content)
+    if not account.valid():
+        return error('invalid email or password', 400)
+    user = base.get_user_by_email(account.email)
+    if not user:
+        return error('email not registered', 405)
+    if not user.match(account):
+        return error('wrong password', 406)
+    token = base.create_token(user, 'access')
+    get_db().commit()
+    log_info(f'Authentication {user.email}')
+    return {'token': token}
+@mod.route('/account/delete', methods=['POST'])
+def delete():
+    args = request.args
+    token = args.get('token')
+    user = base.get_user_by_token(token, 'access')
+    if not user:
+        return error('invalid token', 401)
+    base.delete_user(user)
+    get_db().commit()
+    log_info(f'User deleted {user.email}')
+    return ok()
+@mod.route('/account/set_about', methods=['POST'])
+def set_about():
+    args = request.args
+    content = request.json
+    token = args.get('token')
+    about = UserAbout(content)
+    if not about.valid():
+        return error('invalid about section', 405)
+    user = base.get_user_by_token(token, 'access')
+    if not user:
+        return error('invalid token', 401)
+    base.set_user_about(user, about)
+    get_db().commit()
+    log_info(f'User about updated {user.email}')
+    return ok()
+\end{verbatim}
+
+\subsection{messenger.py}
+\begin{verbatim}
+class Chat:
+    def __init__(self, row):
+        self.id = row[0]
+        self.type = row[1]
+        self.name = row[2]
+class MessageModel:
+    def __init__(self, json):
+        self.text = json.get('text', None)
+        self.time = json.get('time', None)
+    def valid(self):
+        return type(self.text) == str and len(self.text) > 0
+class Message:
+    def __init__(self, row):
+        self.id = row[0]
+        self.chat_id = row[1]
+        self.user_id = row[2]
+        self.time = row[3]
+        self.text = row[4]
+\end{verbatim}
+
+\subsection{account.py}
+\begin{verbatim}
+import re
+from constants import MIN_PASSWORD_LENGTH
+from util import hash_password
+def check_email(email):
+    return email != None and re.match(r'\S+@\S+\.\S+', email) != None
+def check_password(password):
+    return password != None and len(password) >= MIN_PASSWORD_LENGTH
+def check_name(name):
+    return name != None and len(name) > 0
+class Account:
+    def __init__(self, json):
+        self.email = json.get('email', None)
+        self.password = json.get('password', None)
+        if check_password(self.password):
+            self.password = hash_password(self.password)
+    def valid(self):
+        return check_email(self.email) and check_password(self.passwor
+d)
+class UserAbout:
+    def __init__(self, json):
+        self.name = json.get('name', None)
+    def valid(self):
+        return check_name(self.name)
+class User:
+    def __init__(self, row):
+        self.id = row[0]
+        self.email = row[1]
+        self.password = row[2]
+        self.confirmed = row[3]
+        self.name = row[4]
+        self.bid = row[5]
+    def match(self, account):
+        return self.email == account.email and self.password == accoun
+t.password
+    def about(self):
+        return {
+            'id': self.id,
+            'email': self.email,
+            'confirmed': self.confirmed,
+            'about': {
+                'name': self.name
+            }
+        }
+class Token:
+    def __init__(self, row):
+        self.id = row[0]
+        self.type = row[1]
+        self.token = row[2]
+        self.user_id = row[3]
+\end{verbatim}
+
+\section{Исходный код миграций}
+
+\subsection{v01\_init.sql}
+\begin{verbatim}
+CREATE TABLE user (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL,
+    password TEXT NOT NULL,
+    confirmed INTEGER DEFAULT 0,
+    name TEXT,
+    bid TEXT
+);
+CREATE TABLE token (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    type TEXT NOT NULL,
+    token TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES user(id)
+        ON DELETE CASCADE
+);
+CREATE TABLE chat (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    type TEXT NOT NULL,
+    name TEXT
+);
+CREATE TABLE membership (
+    user_id INTEGER NOT NULL,
+    chat_id INTEGER NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES user(id)
+        ON DELETE CASCADE,
+    FOREIGN KEY(chat_id) REFERENCES chat(id)
+        ON DELETE CASCADE
+);
+CREATE TABLE message (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    time TEXT NOT NULL,
+    text TEXT NOT NULL,
+    FOREIGN KEY(chat_id) REFERENCES chat(id)
+        ON DELETE CASCADE
+);
+\end{verbatim}
+
+
+\bibliography{espd,library}
+
+\end{document}
